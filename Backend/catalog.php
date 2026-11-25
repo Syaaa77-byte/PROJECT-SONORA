@@ -55,6 +55,12 @@ if (isset($_GET['q'])) {
     exit;
 }
 
+$totalRow = $db->query('SELECT COUNT(*) AS total FROM songs')->fetch_assoc();
+if (((int) ($totalRow['total'] ?? 0)) > 0 && !isset($_GET['force'])) {
+    echo json_encode(['added' => 0, 'skipped' => true, 'message' => 'Katalog sudah tersedia'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 $added = 0;
 foreach (search_itunes('top hits all', 30) as $track) {
     $item = track_data($track);

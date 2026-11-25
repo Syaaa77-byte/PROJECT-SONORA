@@ -6,8 +6,10 @@ CREATE TABLE IF NOT EXISTS users (
     id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     email VARCHAR(120) NOT NULL UNIQUE,
-    password VARCHAR(255) NOT NULL,
+    password VARCHAR(255) NULL DEFAULT NULL,
     role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+    google_id VARCHAR(100) NULL UNIQUE DEFAULT NULL,
+    avatar VARCHAR(500) NULL DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -40,6 +42,3 @@ CREATE TABLE IF NOT EXISTS ratings (
 INSERT INTO users (name, email, password, role) VALUES
 ('Administrator', 'admin@sonora.test', '$2y$10$fZLhCyowPMwUU14uEdvMpe.joxKUGygHagFZ2ol5g2mgzglpKpljq', 'admin')
 ON DUPLICATE KEY UPDATE email = email;
-
-INSERT INTO songs (title, artist, album, genre, year, cover_url, description) VALUES
-ON DUPLICATE KEY UPDATE title = VALUES(title);

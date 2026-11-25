@@ -1,11 +1,22 @@
 <?php
 require_once __DIR__ . '/functions.php';
 
-header('Access-Control-Allow-Origin: http://localhost');
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+$allowedOrigins = ['http://localhost', 'http://localhost:8000', 'http://127.0.0.1:8000'];
+if (in_array($origin, $allowedOrigins, true)) {
+    header("Access-Control-Allow-Origin: {$origin}");
+} else {
+    header('Access-Control-Allow-Origin: http://localhost:8000');
+}
 header('Access-Control-Allow-Credentials: true');
 header('Access-Control-Allow-Headers: Content-Type');
 
 $method = $_SERVER['REQUEST_METHOD'];
+if ($method === 'OPTIONS') {
+    http_response_code(204);
+    exit;
+}
+
 $action = $_GET['action'] ?? '';
 
 if ($method === 'POST') {
@@ -31,18 +42,30 @@ if ($action === 'register' && $method === 'POST') {
     $stmt = $db->prepare('INSERT INTO users (name, email, password) VALUES (?, ?, ?)');
     $stmt->bind_param('sss', $name, $email, $hash);
     $stmt->execute();
-    $_SESSION['user'] = ['id' => $stmt->insert_id, 'name' => $name, 'email' => $email, 'role' => 'user'];
+    $_SESSION['user'] = [
+        'id' => $stmt->insert_id,
+        'name' => $name,
+        'email' => $email,
+        'role' => 'user',
+        'avatar' => null,
+    ];
     json_response(['message' => 'Pendaftaran berhasil.', 'user' => $_SESSION['user']]);
 }
 
 if ($action === 'login' && $method === 'POST') {
     $email = strtolower(clean_input((string) ($input['email'] ?? '')));
     $password = (string) ($input['password'] ?? '');
-    $stmt = $db->prepare('SELECT id, name, email, password, role FROM users WHERE email = ?');
+    $stmt = $db->prepare('SELECT id, name, email, password, role, avatar FROM users WHERE email = ?');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
-    if (!$user || !password_verify($password, $user['password'])) {
+    if (!$user) {
+        json_response(['error' => 'Email atau password salah.'], 401);
+    }
+    if (empty($user['password'])) {
+        json_response(['error' => 'Akun ini terdaftar melalui Google. Silakan masuk dengan tombol Lanjutkan dengan Google.'], 401);
+    }
+    if (!password_verify($password, $user['password'])) {
         json_response(['error' => 'Email atau password salah.'], 401);
     }
     unset($user['password']);
@@ -56,28 +79,37 @@ if ($action === 'logout' && $method === 'POST') {
 }
 
 if ($action === 'songs' && $method === 'GET') {
-    json_response(['songs' => song_list($db, clean_input((string) ($input['search'] ?? '')))]);
+    $search = clean_input((string) ($input['search'] ?? ''));
+    $genre = trim((string) ($input['genre'] ?? ''));
+    $sort = trim((string) ($input['sort'] ?? 'rating_desc'));
+    json_response([
+        'songs' => song_list($db, $search, $genre, $sort),
+        'stats' => song_stats($db),
+        'genres' => song_genres($db),
+        'top_rated' => top_rated_songs($db, 3),
+    ]);
 }
 
 if ($action === 'song' && $method === 'GET') {
     $id = (int) ($input['id'] ?? 0);
-    $stmt = $db->prepare("SELECT s.*, COALESCE(ROUND(AVG(r.score), 1), 0) average_rating, COUNT(r.id) rating_count FROM songs s LEFT JOIN ratings r ON r.song_id=s.id WHERE s.id=? GROUP BY s.id");
-    $stmt->bind_param('i', $id);
-    $stmt->execute();
-    $song = $stmt->get_result()->fetch_assoc();
-    if (!$song) json_response(['error' => 'Lagu tidak ditemukan.'], 404);
-    json_response(['song' => $song]);
+    $currentUserId = isset($_SESSION['user']['id']) ? (int) $_SESSION['user']['id'] : null;
+    $detail = song_detail($db, $id, $currentUserId);
+    if (!$detail) {
+        json_response(['error' => 'Lagu tidak ditemukan.'], 404);
+    }
+    json_response($detail);
 }
-
 
 if (in_array($action, ['add-song', 'update-song', 'delete-song'], true)) {
     require_admin();
 }
 
 if ($action === 'add-song' && $method === 'POST') {
-    $title = clean_input((string) $input['title']);
-    $artist = clean_input((string) $input['artist']);
-    if ($title === '' || $artist === '') json_response(['error' => 'Judul dan artis wajib diisi.'], 422);
+    $title = clean_input((string) ($input['title'] ?? ''));
+    $artist = clean_input((string) ($input['artist'] ?? ''));
+    if ($title === '' || $artist === '') {
+        json_response(['error' => 'Judul dan artis wajib diisi.'], 422);
+    }
     $stmt = $db->prepare('INSERT INTO songs (title, artist, album, genre, year, cover_url, description) VALUES (?, ?, ?, ?, ?, ?, ?)');
     $album = clean_input((string) ($input['album'] ?? ''));
     $genre = clean_input((string) ($input['genre'] ?? ''));
@@ -90,10 +122,12 @@ if ($action === 'add-song' && $method === 'POST') {
 }
 
 if ($action === 'update-song' && $method === 'POST') {
-    $id = (int) $input['id'];
-    $title = clean_input((string) $input['title']);
-    $artist = clean_input((string) $input['artist']);
-    if ($id < 1 || $title === '' || $artist === '') json_response(['error' => 'Data lagu tidak valid.'], 422);
+    $id = (int) ($input['id'] ?? 0);
+    $title = clean_input((string) ($input['title'] ?? ''));
+    $artist = clean_input((string) ($input['artist'] ?? ''));
+    if ($id < 1 || $title === '' || $artist === '') {
+        json_response(['error' => 'Data lagu tidak valid.'], 422);
+    }
     $stmt = $db->prepare('UPDATE songs SET title=?, artist=?, album=?, genre=?, year=?, cover_url=?, description=? WHERE id=?');
     $album = clean_input((string) ($input['album'] ?? ''));
     $genre = clean_input((string) ($input['genre'] ?? ''));
@@ -118,7 +152,15 @@ if ($action === 'rate' && $method === 'POST') {
     $songId = (int) ($input['song_id'] ?? 0);
     $score = (int) ($input['score'] ?? 0);
     $review = clean_input((string) ($input['review'] ?? ''));
-    if ($songId < 1 || $score < 1 || $score > 5) json_response(['error' => 'Rating harus bernilai 1 sampai 5.'], 422);
+    if ($songId < 1 || $score < 1 || $score > 5) {
+        json_response(['error' => 'Rating harus bernilai 1 sampai 5.'], 422);
+    }
+    $songCheck = $db->prepare('SELECT id FROM songs WHERE id = ? LIMIT 1');
+    $songCheck->bind_param('i', $songId);
+    $songCheck->execute();
+    if (!$songCheck->get_result()->fetch_assoc()) {
+        json_response(['error' => 'Lagu tidak ditemukan.'], 404);
+    }
     $stmt = $db->prepare('INSERT INTO ratings (song_id, user_id, score, review) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE score=VALUES(score), review=VALUES(review)');
     $stmt->bind_param('iiis', $songId, $user['id'], $score, $review);
     $stmt->execute();
